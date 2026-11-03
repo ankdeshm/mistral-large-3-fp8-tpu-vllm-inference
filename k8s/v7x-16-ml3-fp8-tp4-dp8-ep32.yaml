@@ -1,0 +1,343 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-ml3-fp8-tp4-svc
+  namespace: default
+spec:
+  selector:
+    app: vllm-ml3-fp8-tp4
+    role: leader
+  ports:
+  - name: http
+    port: 8000
+    targetPort: 8000
+---
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: vllm-ml3-fp8-tp4
+  namespace: default
+  annotations:
+    leaderworkerset.sigs.k8s.io/exclusive-topology: cloud.google.com/gke-nodepool
+spec:
+  replicas: 1
+  leaderWorkerTemplate:
+    size: 4
+    restartPolicy: RecreateGroupOnPodRestart
+    leaderTemplate:
+      metadata:
+        labels:
+          role: leader
+          app: vllm-ml3-fp8-tp4
+        annotations:
+          gke-gcsfuse/volumes: "true"
+          gke-gcsfuse/cpu-limit: "0"
+          gke-gcsfuse/memory-limit: "0"
+          gke-gcsfuse/ephemeral-storage-limit: "0"
+          cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+      spec:
+        serviceAccountName: default
+        nodeSelector:
+          cloud.google.com/gke-nodepool: tpu-v7x-16-pool
+          cloud.google.com/gke-tpu-accelerator: tpu7x
+          cloud.google.com/gke-tpu-topology: 2x2x4
+        tolerations:
+        - key: "google.com/tpu"
+          operator: "Exists"
+          effect: "NoSchedule"
+        - key: "cloud.google.com/gke-spot"
+          operator: "Exists"
+          effect: "NoSchedule"
+        - key: "cloud.google.com/gke-queued"
+          operator: "Exists"
+          effect: "NoSchedule"
+        containers:
+        - name: vllm-server
+          image: us-central1-docker.pkg.dev/YOUR_GCP_PROJECT_ID/vllm/vllm-torchtpu-bench:v0.32.0
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-c"]
+          args:
+          - |
+            set -e
+            python3 /workspace/apply_ml3_patches.py
+            ulimit -c 0 || true
+            mkdir -p /dev/shm/hf_cache /dev/shm/vllm_tmp /dev/shm/vllm_cache /dev/shm/torchinductor
+            unset TORCH_TPU_TOPOLOGY
+            export TPU_PROCESS_ADDRESSES=""
+            export RAY_EXPERIMENTAL_NOSET_TPU_VISIBLE_CHIPS=1
+            ray start --head --port=6379 --num-cpus=160 --resources='{"TPU": 8}' --labels="ray.io/tpu-worker-id=${TPU_WORKER_ID:-0}"
+            until [ "$(python3 -c 'import ray; ray.init(address="auto", logging_level="ERROR"); print(sum(1 for n in ray.nodes() if n["Alive"] and n.get("Resources", {}).get("TPU", 0) >= 8))' 2>/dev/null)" = "4" ]; do
+              echo "Waiting for all 4 TPU v7x hosts (32 TensorCores, 3072 GiB HBM3e) to join Ray..."
+              sleep 5
+            done
+            ray status
+            exec vllm serve "${MODEL_PATH}" \
+              --tokenizer="${TOKENIZER_PATH}" \
+              --served-model-name="${SERVED_MODEL_NAME}" \
+              --host=0.0.0.0 \
+              --port=8000 \
+              --api-server-count=1 \
+              --tensor-parallel-size=4 \
+              --data-parallel-size=8 \
+              --enable-expert-parallel \
+              --enable-ep-weight-filter \
+              --load-format=runai_streamer \
+              --safetensors-load-strategy=prefetch \
+              --model-loader-extra-config='{"memory_limit":8589934592,"concurrency":8}' \
+              --kv-cache-dtype=fp8 \
+              --gpu-memory-utilization=0.88 \
+              --max-model-len=132096 \
+              --max-num-seqs=64 \
+              --max-num-batched-tokens=1024 \
+              --tokenizer-mode=mistral \
+              --config-format=mistral \
+              --language-model-only \
+              --compilation-config='{"compile_sizes":[4,16,64,256,512,1024]}' \
+              --enable-prefix-caching \
+              --async-scheduling \
+              --trust-remote-code
+          env:
+          - name: MODEL_PATH
+            value: "gs://YOUR_GCS_BUCKET/models/mistralai/Mistral-Large-3-675B-Instruct-2512"
+          - name: TOKENIZER_PATH
+            value: "/models/models/mistralai/Mistral-Large-3-675B-Instruct-2512"
+          - name: SERVED_MODEL_NAME
+            value: "mistralai/Mistral-Large-3-675B-Instruct-2512"
+          - name: RUNAI_STREAMER_PROCESS_GROUP_SIZE
+            value: "8"
+          - name: RUNAI_STREAMER_CONCURRENCY
+            value: "8"
+          - name: RUNAI_STREAMER_MEMORY_LIMIT
+            value: "8589934592"
+          - name: VLLM_TPU_WEIGHT_LOAD_SYNC_INTERVAL
+            value: "100"
+          - name: HF_HOME
+            value: "/dev/shm/hf_cache"
+          - name: TMPDIR
+            value: "/dev/shm/vllm_tmp"
+          - name: VLLM_CACHE_ROOT
+            value: "/dev/shm/vllm_cache"
+          - name: VLLM_XLA_CACHE_PATH
+            value: "/dev/shm/vllm_cache"
+          - name: TORCHINDUCTOR_CACHE_DIR
+            value: "/dev/shm/torchinductor"
+          - name: TORCHINDUCTOR_AUTOGRAD_CACHE
+            value: "0"
+          - name: TORCH_DIST_TIMEOUT
+            value: "1800"
+          - name: VLLM_RPC_TIMEOUT
+            value: "1800000"
+          - name: VLLM_SHM_BROADCAST_TIMEOUT_S
+            value: "1800"
+          - name: VLLM_ENGINE_ITERATION_TIMEOUT_S
+            value: "1800"
+          - name: VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS
+            value: "1800"
+          - name: VLLM_ENGINE_READY_TIMEOUT_S
+            value: "5400"
+          - name: VLLM_RAY_EXTRA_ENV_VARS_TO_COPY
+            value: "RUNAI_STREAMER_PROCESS_GROUP_SIZE,RUNAI_STREAMER_CONCURRENCY,RUNAI_STREAMER_MEMORY_LIMIT,VLLM_TPU_WEIGHT_LOAD_SYNC_INTERVAL,TORCH_DIST_TIMEOUT,TMPDIR,HF_HOME,TORCHINDUCTOR_CACHE_DIR,TORCHINDUCTOR_AUTOGRAD_CACHE,VLLM_PLUGINS,VLLM_TARGET_DEVICE,PJRT_DEVICE"
+          - name: TPU_MULTIHOST_BACKEND
+            value: "ray"
+          - name: TPU_PROCESS_ADDRESSES
+            value: ""
+          - name: TPU_SKIP_MDS_QUERY
+            value: "1"
+          - name: RAY_EXPERIMENTAL_NOSET_TPU_VISIBLE_CHIPS
+            value: "1"
+          - name: VLLM_PLUGINS
+            value: "torchtpu"
+          - name: VLLM_TARGET_DEVICE
+            value: "tpu"
+          - name: PJRT_DEVICE
+            value: "TPU"
+          - name: VLLM_WORKER_MULTIPROC_METHOD
+            value: "spawn"
+          - name: VLLM_NO_USAGE_STATS
+            value: "1"
+          resources:
+            limits:
+              google.com/tpu: "4"
+            requests:
+              google.com/tpu: "4"
+          volumeMounts:
+          - name: models-gcs
+            mountPath: /models
+          - name: dshm
+            mountPath: /dev/shm
+        volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 200Gi
+        - name: models-gcs
+          persistentVolumeClaim:
+            claimName: tpu-models-gcs-pvc
+    workerTemplate:
+      metadata:
+        labels:
+          role: worker
+          app: vllm-ml3-fp8-tp4
+        annotations:
+          gke-gcsfuse/volumes: "true"
+          gke-gcsfuse/cpu-limit: "0"
+          gke-gcsfuse/memory-limit: "0"
+          gke-gcsfuse/ephemeral-storage-limit: "0"
+          cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+      spec:
+        serviceAccountName: default
+        nodeSelector:
+          cloud.google.com/gke-nodepool: tpu-v7x-16-pool
+          cloud.google.com/gke-tpu-accelerator: tpu7x
+          cloud.google.com/gke-tpu-topology: 2x2x4
+        tolerations:
+        - key: "google.com/tpu"
+          operator: "Exists"
+          effect: "NoSchedule"
+        - key: "cloud.google.com/gke-spot"
+          operator: "Exists"
+          effect: "NoSchedule"
+        - key: "cloud.google.com/gke-queued"
+          operator: "Exists"
+          effect: "NoSchedule"
+        containers:
+        - name: vllm-worker
+          image: us-central1-docker.pkg.dev/YOUR_GCP_PROJECT_ID/vllm/vllm-torchtpu-bench:v0.32.0
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-c"]
+          args:
+          - |
+            set -e
+            python3 /workspace/apply_ml3_patches.py
+            ulimit -c 0 || true
+            mkdir -p /dev/shm/hf_cache /dev/shm/vllm_tmp /dev/shm/vllm_cache /dev/shm/torchinductor
+            unset TORCH_TPU_TOPOLOGY
+            export TPU_PROCESS_ADDRESSES=""
+            export RAY_EXPERIMENTAL_NOSET_TPU_VISIBLE_CHIPS=1
+            until (echo > "/dev/tcp/${LWS_LEADER_ADDRESS}/6379") 2>/dev/null; do
+              echo "Waiting for Ray head at ${LWS_LEADER_ADDRESS}:6379..."
+              sleep 3
+            done
+            exec ray start --address="${LWS_LEADER_ADDRESS}:6379" --num-cpus=160 --resources='{"TPU": 8}' --labels="ray.io/tpu-worker-id=${TPU_WORKER_ID:-0}" --block
+          env:
+          - name: RUNAI_STREAMER_PROCESS_GROUP_SIZE
+            value: "8"
+          - name: RUNAI_STREAMER_CONCURRENCY
+            value: "8"
+          - name: RUNAI_STREAMER_MEMORY_LIMIT
+            value: "8589934592"
+          - name: VLLM_TPU_WEIGHT_LOAD_SYNC_INTERVAL
+            value: "100"
+          - name: HF_HOME
+            value: "/dev/shm/hf_cache"
+          - name: TMPDIR
+            value: "/dev/shm/vllm_tmp"
+          - name: VLLM_CACHE_ROOT
+            value: "/dev/shm/vllm_cache"
+          - name: VLLM_XLA_CACHE_PATH
+            value: "/dev/shm/vllm_cache"
+          - name: TORCHINDUCTOR_CACHE_DIR
+            value: "/dev/shm/torchinductor"
+          - name: TORCHINDUCTOR_AUTOGRAD_CACHE
+            value: "0"
+          - name: TORCH_DIST_TIMEOUT
+            value: "1800"
+          - name: VLLM_RPC_TIMEOUT
+            value: "1800000"
+          - name: VLLM_SHM_BROADCAST_TIMEOUT_S
+            value: "1800"
+          - name: VLLM_ENGINE_ITERATION_TIMEOUT_S
+            value: "1800"
+          - name: VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS
+            value: "1800"
+          - name: VLLM_ENGINE_READY_TIMEOUT_S
+            value: "5400"
+          - name: VLLM_RAY_EXTRA_ENV_VARS_TO_COPY
+            value: "RUNAI_STREAMER_PROCESS_GROUP_SIZE,RUNAI_STREAMER_CONCURRENCY,RUNAI_STREAMER_MEMORY_LIMIT,VLLM_TPU_WEIGHT_LOAD_SYNC_INTERVAL,TORCH_DIST_TIMEOUT,TMPDIR,HF_HOME,TORCHINDUCTOR_CACHE_DIR,TORCHINDUCTOR_AUTOGRAD_CACHE,VLLM_PLUGINS,VLLM_TARGET_DEVICE,PJRT_DEVICE"
+          - name: TPU_MULTIHOST_BACKEND
+            value: "ray"
+          - name: TPU_PROCESS_ADDRESSES
+            value: ""
+          - name: TPU_SKIP_MDS_QUERY
+            value: "1"
+          - name: RAY_EXPERIMENTAL_NOSET_TPU_VISIBLE_CHIPS
+            value: "1"
+          - name: VLLM_PLUGINS
+            value: "torchtpu"
+          - name: VLLM_TARGET_DEVICE
+            value: "tpu"
+          - name: PJRT_DEVICE
+            value: "TPU"
+          - name: VLLM_WORKER_MULTIPROC_METHOD
+            value: "spawn"
+          - name: VLLM_NO_USAGE_STATS
+            value: "1"
+          resources:
+            limits:
+              google.com/tpu: "4"
+            requests:
+              google.com/tpu: "4"
+          volumeMounts:
+          - name: models-gcs
+            mountPath: /models
+          - name: dshm
+            mountPath: /dev/shm
+        volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 200Gi
+        - name: models-gcs
+          persistentVolumeClaim:
+            claimName: tpu-models-gcs-pvc
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: bench-v7x-16-ml3-fp8-tp4-dp8-ep32
+  namespace: default
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      annotations:
+        gke-gcsfuse/volumes: "true"
+    spec:
+      serviceAccountName: default
+      restartPolicy: OnFailure
+      containers:
+      - name: bench
+        image: us-central1-docker.pkg.dev/YOUR_GCP_PROJECT_ID/vllm/vllm-torchtpu-bench:v0.32.0
+        imagePullPolicy: IfNotPresent
+        command: ["python3", "/scripts/run_tpu_benchmark_sweep.py"]
+        args:
+        - --host=vllm-ml3-fp8-tp4-svc
+        - --port=8000
+        - --tokenizer=/models/models/mistralai/Mistral-Large-3-675B-Instruct-2512
+        - --slice-name=v7x-16-2x2x4-32cores
+        - --config-tag=ml3-fp8-tp4-dp8-ep32
+        - --max-input-len=131072
+        - --output-len=1024
+        - --input-lens=4096:1|8|32|64|128|256
+        - --prefix-concurrencies=
+        - --context-lengths=65536
+        - --context-concurrency=4
+        - --context-prompts=8
+        - --context-output-len=512
+        - --greedy-concurrencies=
+        - --greedy-output-len=1024
+        - --temperature=0.6
+        - --no-inferencex
+        - --output-dir=/models/benchmark-results
+        volumeMounts:
+        - name: models-gcs
+          mountPath: /models
+        - name: bench-script
+          mountPath: /scripts
+      volumes:
+      - name: models-gcs
+        persistentVolumeClaim:
+          claimName: tpu-models-gcs-pvc
+      - name: bench-script
+        configMap:
+          name: tpu-bench-script
