@@ -1,0 +1,171 @@
+{
+  "out_root": "/models/benchmark-results/mistral_large3_v7x16_vllm/run2",
+  "slice_name": "v7x-16-2x2x4-32cores",
+  "hosts": 4,
+  "tpu_per_host_in_ray": 8,
+  "unset_torch_tpu_topology": true,
+  "experiments": [
+    {
+      "id": "ml3_fp8_tp2_dp16_ep32",
+      "candidates": [
+        {
+          "config_tag": "ml3-fp8-tp2-dp16-ep32-fp8kv",
+          "model_path": "gs://YOUR_GCS_BUCKET/models/mistralai/Mistral-Large-3-675B-Instruct-2512",
+          "tokenizer_path": "/models/models/mistralai/Mistral-Large-3-675B-Instruct-2512",
+          "served_name": "mistralai/Mistral-Large-3-675B-Instruct-2512",
+          "tp": 2, "dp": 16, "kv_dtype": "fp8", "mem_util": 0.88,
+          "max_model_len": 132096, "max_num_seqs": 64, "max_batched_tokens": 1024,
+          "ready_timeout_s": 6000,
+          "extra_args": ["--enable-expert-parallel", "--enable-ep-weight-filter",
+                         "--tokenizer-mode=mistral", "--config-format=mistral", "--language-model-only",
+                         "--compilation-config={\"compile_sizes\":[4,16,64,256,512,1024]}"],
+          "sweep": {
+            "max_input_len": 131072, "output_len": 1024,
+            "input_lens": "1024:1|32|128|256,4096:1|8|32|64|128|256",
+            "min_prompts": 4, "prompts_per_conc": 2,
+            "prefix_concurrencies": "32", "prefix_ratios": "0.8,0.95",
+            "context_lengths": "8192,32768,65536,131072", "context_concurrency": 4, "context_prompts": 8,
+            "context_output_len": 512,
+            "greedy_concurrencies": "1,8,32", "greedy_output_len": 1024,
+            "temperature": 0.6
+          }
+        },
+        {
+          "config_tag": "ml3-fp8-tp2-dp16-ep32-bf16kv",
+          "model_path": "gs://YOUR_GCS_BUCKET/models/mistralai/Mistral-Large-3-675B-Instruct-2512",
+          "tokenizer_path": "/models/models/mistralai/Mistral-Large-3-675B-Instruct-2512",
+          "served_name": "mistralai/Mistral-Large-3-675B-Instruct-2512",
+          "tp": 2, "dp": 16, "kv_dtype": "auto", "mem_util": 0.88,
+          "max_model_len": 132096, "max_num_seqs": 64, "max_batched_tokens": 1024,
+          "ready_timeout_s": 6000,
+          "extra_args": ["--enable-expert-parallel", "--enable-ep-weight-filter",
+                         "--tokenizer-mode=mistral", "--config-format=mistral", "--language-model-only",
+                         "--compilation-config={\"compile_sizes\":[4,16,64,256,512,1024]}"],
+          "sweep": {
+            "max_input_len": 131072, "output_len": 1024,
+            "input_lens": "1024:1|32|128|256,4096:1|8|32|64|128|256",
+            "min_prompts": 4, "prompts_per_conc": 2,
+            "prefix_concurrencies": "32", "prefix_ratios": "0.8,0.95",
+            "context_lengths": "8192,32768,65536,131072", "context_concurrency": 4, "context_prompts": 8,
+            "context_output_len": 512,
+            "greedy_concurrencies": "1,8,32", "greedy_output_len": 1024,
+            "temperature": 0.6
+          }
+        },
+        {
+          "config_tag": "ml3-fp8-tp2-dp16-ep32-fp8kv-withvision",
+          "model_path": "gs://YOUR_GCS_BUCKET/models/mistralai/Mistral-Large-3-675B-Instruct-2512",
+          "tokenizer_path": "/models/models/mistralai/Mistral-Large-3-675B-Instruct-2512",
+          "served_name": "mistralai/Mistral-Large-3-675B-Instruct-2512",
+          "tp": 2, "dp": 16, "kv_dtype": "fp8", "mem_util": 0.88,
+          "max_model_len": 69632, "max_num_seqs": 64, "max_batched_tokens": 1024,
+          "ready_timeout_s": 6000,
+          "extra_args": ["--enable-expert-parallel", "--enable-ep-weight-filter",
+                         "--tokenizer-mode=mistral", "--config-format=mistral",
+                         "--compilation-config={\"compile_sizes\":[4,16,64,256,512,1024]}"],
+          "sweep": {
+            "max_input_len": 65536, "output_len": 1024,
+            "input_lens": "1024:1|32|128|256,4096:1|8|32|64|128|256",
+            "min_prompts": 4, "prompts_per_conc": 2,
+            "prefix_concurrencies": "32", "prefix_ratios": "0.8,0.95",
+            "context_lengths": "8192,32768,65536", "context_concurrency": 4, "context_prompts": 8,
+            "context_output_len": 512,
+            "greedy_concurrencies": "1,8,32", "greedy_output_len": 1024,
+            "temperature": 0.6
+          }
+        }
+      ]
+    },
+    {
+      "id": "ml3_fp8_tp2_dp16_ep32_eagle",
+      "derive_from": "ml3_fp8_tp2_dp16_ep32",
+      "variants": [
+        {
+          "tag_suffix": "-eagle3tok",
+          "extra_args_add": ["--speculative-config={\"method\":\"eagle\",\"model\":\"/models/models/mistralai/Mistral-Large-3-675B-Instruct-2512-Eagle\",\"num_speculative_tokens\":3}"],
+          "sweep_replace": {"max_input_len": 131072, "output_len": 1024, "input_lens": "", "concurrencies": "",
+                            "prefix_concurrencies": "", "context_lengths": "", "greedy_concurrencies": "1,8,32",
+                            "greedy_output_len": 1024, "min_prompts": 4, "prompts_per_conc": 2}
+        },
+        {
+          "tag_suffix": "-eagle3tok-noasync",
+          "override": {"async_scheduling": false},
+          "extra_args_add": ["--speculative-config={\"method\":\"eagle\",\"model\":\"/models/models/mistralai/Mistral-Large-3-675B-Instruct-2512-Eagle\",\"num_speculative_tokens\":3}"],
+          "sweep_replace": {"max_input_len": 131072, "output_len": 1024, "input_lens": "", "concurrencies": "",
+                            "prefix_concurrencies": "", "context_lengths": "", "greedy_concurrencies": "1,8,32",
+                            "greedy_output_len": 1024, "min_prompts": 4, "prompts_per_conc": 2}
+        }
+      ]
+    },
+    {
+      "id": "ml3_fp8_tp1_dp32_ep32",
+      "derive_from": "ml3_fp8_tp2_dp16_ep32",
+      "variants": [
+        {
+          "config_tag": "ml3-fp8-tp1-dp32-ep32",
+          "override": {"tp": 1, "dp": 32},
+          "sweep_replace": {"max_input_len": 131072, "output_len": 1024,
+                            "input_lens": "4096:1|8|32|64|128|256|512", "prefix_concurrencies": "",
+                            "context_lengths": "32768,65536", "context_concurrency": 4, "context_prompts": 8,
+                            "context_output_len": 512, "greedy_concurrencies": "1", "min_prompts": 4,
+                            "prompts_per_conc": 2}
+        }
+      ]
+    },
+    {
+      "id": "ml3_fp8_tp8_dp4_ep32",
+      "derive_from": "ml3_fp8_tp2_dp16_ep32",
+      "variants": [
+        {
+          "config_tag": "ml3-fp8-tp8-dp4-ep32",
+          "override": {"tp": 8, "dp": 4},
+          "sweep_replace": {"max_input_len": 131072, "output_len": 1024,
+                            "input_lens": "4096:1|8|32|64|128|256", "prefix_concurrencies": "",
+                            "context_lengths": "32768,65536", "context_concurrency": 4, "context_prompts": 8,
+                            "context_output_len": 512, "greedy_concurrencies": "1", "min_prompts": 4,
+                            "prompts_per_conc": 2}
+        }
+      ]
+    },
+    {
+      "id": "ml3_fp8_tp4_dp8_ep32",
+      "derive_from": "ml3_fp8_tp2_dp16_ep32",
+      "variants": [
+        {
+          "config_tag": "ml3-fp8-tp4-dp8-ep32",
+          "override": {"tp": 4, "dp": 8},
+          "sweep_replace": {"max_input_len": 131072, "output_len": 1024,
+                            "input_lens": "4096:1|8|32|64|128|256", "prefix_concurrencies": "",
+                            "context_lengths": "65536", "context_concurrency": 4, "context_prompts": 8,
+                            "context_output_len": 512, "greedy_concurrencies": "", "min_prompts": 4,
+                            "prompts_per_conc": 2}
+        }
+      ]
+    },
+    {
+      "id": "ml3_bf16_tp2_dp16_ep32",
+      "candidates": [
+        {
+          "config_tag": "ml3-bf16-tp2-dp16-ep32-fp8kv",
+          "model_path": "gs://YOUR_GCS_BUCKET/models/mistralai/Mistral-Large-3-675B-Instruct-2512-BF16",
+          "tokenizer_path": "/models/models/mistralai/Mistral-Large-3-675B-Instruct-2512-BF16",
+          "bench_tokenizer": "/models/models/mistralai/Mistral-Large-3-675B-Instruct-2512",
+          "served_name": "mistralai/Mistral-Large-3-675B-Instruct-2512-BF16",
+          "tp": 2, "dp": 16, "kv_dtype": "fp8", "mem_util": 0.9,
+          "max_model_len": 132096, "max_num_seqs": 64, "max_batched_tokens": 1024,
+          "ready_timeout_s": 7200,
+          "extra_args": ["--enable-expert-parallel", "--enable-ep-weight-filter",
+                         "--tokenizer-mode=mistral", "--config-format=mistral", "--language-model-only",
+                         "--compilation-config={\"compile_sizes\":[4,16,64,256,512,1024]}"],
+          "sweep": {
+            "max_input_len": 131072, "output_len": 1024,
+            "input_lens": "4096:1|8|32|64|128|256", "prefix_concurrencies": "",
+            "context_lengths": "32768,65536,131072", "context_concurrency": 4, "context_prompts": 8,
+            "context_output_len": 512, "greedy_concurrencies": "1,8", "min_prompts": 4, "prompts_per_conc": 2,
+            "temperature": 0.6
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,3 +1,7 @@
+# Reference image build - not used for the measured runs.
+# The measured runs used the image referenced in k8s/v7x16-ml3-suite.yaml (vllm 0.32.0 + vllm-torchtpu, with the
+# vllm-torchtpu source tree at /workspace/vllm-torchtpu). scripts/apply_ml3_patches.py edits files under
+# /workspace/vllm-torchtpu/src/vllm_torchtpu, so the base image must provide that tree.
 ARG BASE_IMAGE=vllm/vllm-tpu:nightly-20261029-75749f8-2fb320d
 FROM ${BASE_IMAGE}
 

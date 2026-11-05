@@ -1,0 +1,87 @@
+# Benchmark Job used for the measured runs in this repository: a 4-pod Indexed Job (one pod per TPU v7x host of the
+# v7x-16 slice) plus a headless Service. Every pod applies scripts/apply_ml3_patches.py (default path) and runs
+# scripts/run_vllm_tpu_multihost_plan.py, which executes the configurations in scripts/plan_mistral_large3_v7x16.json
+# (Ray multi-host executor; `vllm serve` and the benchmark client run on pod 0).
+# Project-specific values are placeholders (YOUR_GCP_PROJECT_ID, tpu-v7x-16-pool, tpu-models-gcs-pvc); environment-specific
+# setup steps are omitted.
+# Prerequisites: ConfigMap v7x16-ml3-scripts and Secret hf-token (see README), and a GCS FUSE PVC (tpu-models-gcs-pvc)
+# that mounts YOUR_GCS_BUCKET at /models.
+apiVersion: v1
+kind: Service
+metadata:
+  name: v7x16-ml3-svc
+  namespace: default
+spec:
+  clusterIP: None
+  selector:
+    job-name: v7x16-ml3-suite
+  ports:
+  - {name: coord, port: 19999, targetPort: 19999}
+  - {name: ray, port: 6379, targetPort: 6379}
+  - {name: http, port: 8000, targetPort: 8000}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: v7x16-ml3-suite
+  namespace: default
+spec:
+  completionMode: Indexed
+  completions: 4
+  parallelism: 4
+  backoffLimit: 0
+  template:
+    metadata:
+      annotations:
+        gke-gcsfuse/volumes: "true"
+        gke-gcsfuse/cpu-limit: "0"
+        gke-gcsfuse/memory-limit: "0"
+        gke-gcsfuse/ephemeral-storage-limit: "0"
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+    spec:
+      subdomain: v7x16-ml3-svc
+      restartPolicy: Never
+      serviceAccountName: default
+      nodeSelector:
+        cloud.google.com/gke-nodepool: tpu-v7x-16-pool
+        cloud.google.com/gke-tpu-accelerator: tpu7x
+        cloud.google.com/gke-tpu-topology: 2x2x4
+      tolerations:
+      - {key: google.com/tpu, operator: Exists, effect: NoSchedule}
+      - {key: cloud.google.com/gke-spot, operator: Exists, effect: NoSchedule}
+      - {key: cloud.google.com/gke-queued, operator: Exists, effect: NoSchedule}
+      containers:
+      - name: runner
+        image: us-central1-docker.pkg.dev/YOUR_GCP_PROJECT_ID/vllm/vllm-torchtpu-bench:v0.32.0
+        imagePullPolicy: IfNotPresent
+        command: ["bash", "-c"]
+        args:
+        - |
+          set -o pipefail
+          # Mistral-Large-3 FP8 (compressed-tensors) MoE weight-scale name registration (see apply_ml3_patches.py;
+          # the default path is not exercised by the BF16 checkpoint).
+          python3 /scripts/apply_ml3_patches.py || exit 1
+          exec python3 -u /scripts/run_vllm_tpu_multihost_plan.py
+        env:
+        - {name: SUITE_PLAN, value: /scripts/plan.json}
+        - {name: HEADLESS_SVC, value: v7x16-ml3-svc}
+        - {name: JOB_NAME_PREFIX, value: v7x16-ml3-suite}
+        - name: HUGGING_FACE_HUB_TOKEN
+          valueFrom: {secretKeyRef: {name: hf-token, key: HF_TOKEN}}
+        - name: HF_TOKEN
+          valueFrom: {secretKeyRef: {name: hf-token, key: HF_TOKEN}}
+        - {name: PJRT_DEVICE, value: "TPU"}
+        resources:
+          requests: {google.com/tpu: "4"}
+          limits: {google.com/tpu: "4"}
+        volumeMounts:
+        - {name: models-gcs, mountPath: /models}
+        - {name: suite-scripts, mountPath: /scripts}
+        - {name: dshm, mountPath: /dev/shm}
+      volumes:
+      - name: dshm
+        emptyDir: {medium: Memory, sizeLimit: 200Gi}
+      - name: models-gcs
+        persistentVolumeClaim: {claimName: tpu-models-gcs-pvc}
+      - name: suite-scripts
+        configMap: {name: v7x16-ml3-scripts}

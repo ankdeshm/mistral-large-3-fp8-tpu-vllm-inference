@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Container-start patches for Mistral-Large-3 on vllm-torchtpu v0.32.0 (applied on every host before vLLM starts).
 
+Default: PATCH 1 only. All benchmark results in this repository were produced with PATCH 1 only.
+PATCHES 2-5 (Eagle speculative-decoding draft model) are opt-in: set ML3_EAGLE_PATCHES=1.
+
 PATCH 1 (FP8 MoE weight-scale names, compressed-tensors):
   Mistral-Large-3-675B-Instruct-2512 (FP8) is a compressed-tensors `float-quantized` checkpoint with 128x128 block
   scales stored as `<proj>.weight_scale`. vllm_torchtpu dispatches compressed-tensors FP8 MoE layers to
@@ -13,9 +16,24 @@ PATCH 1 (FP8 MoE weight-scale names, compressed-tensors):
   `_process_fp8_moe_weights` reads `w13_weight_scale_inv` or falls back to `w13_weight_scale`, deletes the checkpoint
   scale param via `w13_{weight_scale_name}`, and installs the runtime per-channel scale as `w13_weight_scale_inv`
   (which the GMM / fused-EP kernels read). No numerics change: same dequant(block FP8) -> requant(per-channel FP8).
+
+PATCHES 2-5 (opt-in, ML3_EAGLE_PATCHES=1; not used for any result in this repository):
+  Adapt the vLLM 0.32.0 Mistral-Large-3 Eagle draft model (mistral_large_3_eagle.py) and the vllm-torchtpu MLA op to
+  the Mistral-Large-3-675B-Instruct-2512-Eagle draft (1 MoE layer, per-tensor FP8 weights, static activation scales).
+  Eagle speculative decoding does not run end-to-end on this stack yet.
+  2. EagleMistralLarge3Model: set `is_fused_shared_expert_enabled` (read by the inherited DeepseekV2Model.load_weights;
+     the class calls nn.Module.__init__ instead of DeepseekV2Model.__init__) and the single-hidden-state attributes
+     `use_aux_hidden_state` / `fc_input_size` read by vllm-torchtpu's Eagle proposer.
+  3. EagleMistralLarge3ForCausalLM: build the draft quantization config with vllm-torchtpu's
+     get_tpu_quantization_config() instead of the upstream CUDA Fp8Config.
+  4. EagleMistralLarge3ForCausalLM: add an identity combine_hidden_states().
+  5. mla_attention_op.py: while kv_b_proj is temporarily un-flipped for MLA weight processing, treat a per-tensor FP8
+     quant method (block_quant=False) as block-quantized so the dequantized weight is not transposed a second time.
+     Layers whose kv_b_proj is block-quantized or unquantized are unaffected.
 """
 from __future__ import annotations
 
+import os
 import pathlib
 import py_compile
 import sys
@@ -39,6 +57,10 @@ PATCHES = [
             return _ml3_method
 """,
     ),
+]
+
+# Opt-in Eagle draft-model patches 2-5 (ML3_EAGLE_PATCHES=1, default off); see the module docstring.
+EAGLE_PATCHES = [
     (
         pathlib.Path("/usr/local/lib/python3.12/site-packages/vllm/model_executor/models/mistral_large_3_eagle.py"),
         """        self.num_redundant_experts = (
@@ -119,8 +141,13 @@ PATCHES = [
 
 
 def main() -> int:
+    patches = list(PATCHES)
+    if os.environ.get("ML3_EAGLE_PATCHES", "0") == "1":
+        patches += EAGLE_PATCHES
+    else:
+        print("[ml3-patch] Eagle draft-model patches 2-5 skipped (set ML3_EAGLE_PATCHES=1 to apply)")
     rc = 0
-    for path, old, new in PATCHES:
+    for path, old, new in patches:
         src = path.read_text()
         if new in src:
             print(f"[ml3-patch] already applied: {path}")
